@@ -1,13 +1,21 @@
 ﻿
 
+using System;
 using System.Data.SqlClient;
+using System.IO;
 using Microsoft.Data.Entity;
 using Xunit;
 
 namespace SqlServerTimeout
 {
+    public class Poco
+    {
+    }
+
     public class TestContext : DbContext
     {
+        public DbSet<Poco> Pocos;
+
         private readonly string _initialCatalog;
 
         public TestContext(string initialCatalog)
@@ -32,12 +40,64 @@ namespace SqlServerTimeout
     public class ParallelCreate
     {
 
+        public string CreateConnectionString(string initialCatalog)
+        {
+            return new SqlConnectionStringBuilder
+                {
+                    DataSource = @"(localdb)\MSSQLLocalDB",
+                    MultipleActiveResultSets = true,
+                    InitialCatalog = initialCatalog,
+                    IntegratedSecurity = true,
+                    ConnectTimeout = 30
+                }.ConnectionString;
+        }
+
+
         public void CreateDatabase(int id)
         {
-            using (var context = new TestContext("stratch" + id))
+            var name = "stratch" + id;
+
+            using (var context = new TestContext(name))
             {
                 context.Database.EnsureDeleted();
                 context.Database.EnsureCreated();
+
+                using (var master = new SqlConnection(CreateConnectionString("master")))
+                {
+                    master.Open();
+
+                    using (var command = master.CreateCommand())
+                    {
+                        command.CommandTimeout = 30;
+
+                        // SET SINGLE_USER will close any open connections that would prevent the drop
+                        command.CommandText
+                            = string.Format(@"IF EXISTS (SELECT * FROM sys.databases WHERE name = N'{0}')
+                                          BEGIN
+                                              ALTER DATABASE [{0}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                                              DROP DATABASE [{0}];
+                                          END", name);
+
+                        command.ExecuteNonQuery();
+
+                        var userFolder = Environment.GetEnvironmentVariable("USERPROFILE");
+                        try
+                        {
+                            File.Delete(Path.Combine(userFolder, name + ".mdf"));
+                        }
+                        catch (Exception)
+                        {
+                        }
+
+                        try
+                        {
+                            File.Delete(Path.Combine(userFolder, name + "_log.ldf"));
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
+                }
             }
         }
 
